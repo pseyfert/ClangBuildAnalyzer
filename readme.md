@@ -15,7 +15,7 @@ reports from multiple compilations, and output "what took the most time" summary
 
 ### Usage
 
-1. **Start the build capture**: `ClangBuildAnalyzer --start <artifacts_folder>`<br/>
+1. **Start the build capture (optional, see below)**: `ClangBuildAnalyzer --start <artifacts_folder>`<br/>
    This will write current timestamp in a `ClangBuildAnalyzerSession.txt` file under the given `artifacts_folder`. The artifacts
    folder is where the compiled object files (and time trace report files) are expected to be produced by your build.
 1. **Do your build**. Does not matter how; an IDE build, a makefile, a shell script, whatever. As long as it invokes
@@ -23,7 +23,7 @@ reports from multiple compilations, and output "what took the most time" summary
 1. **Stop the build capture**: `ClangBuildAnalyzer --stop <artifacts_folder> <capture_file>`<br/>
    This will load all Clang time trace compatible `*.json` files under the given `artifacts_folder` that were modified after
    `--start` step was done (Clang `-ftime-trace` produces one JSON file next to each object file), process them and store data file into
-   a binary `capture_file`.
+   a binary `capture_file`. If the start step above has been skipped, then all the modification time is ignored.
 1. **Run the build analysis**: `ClangBuildAnalyzer --analyze <capture_file>`<br/>
    This will read the `capture_file` produced by `--stop` step, calculate the slowest things and print them. If a
    `ClangBuildAnalyzer.ini` file exists in the current folder, it will be read to control how many of various things to print.
@@ -45,7 +45,7 @@ Compilation (1761 times):
  18046 ms: artifacts/Editor_Src_4.o
  17026 ms: artifacts/Modules_Audio_Public_1.o
  16581 ms: artifacts/Runtime_Camera_4.o
- 
+
 **** Files that took longest to codegen (compiler backend):
 145761 ms: artifacts/Modules_TLS_0.o
 123048 ms: artifacts/Runtime_Core_Containers_1.o
@@ -56,7 +56,7 @@ Compilation (1761 times):
  19006 ms: std::__1::basic_string<char, std::__1::char_traits<char>, std::__1::... (2665 times, avg 7 ms)
  12821 ms: std::__1::map<core::basic_string<char, core::StringStorageDefault<ch... (250 times, avg 51 ms)
   9142 ms: std::__1::map<core::basic_string<char, core::StringStorageDefault<ch... (432 times, avg 21 ms)
-  8515 ms: std::__1::map<int, std::__1::pair<List<ListNode<Behaviour> > *, List... (392 times, avg 21 ms) 
+  8515 ms: std::__1::map<int, std::__1::pair<List<ListNode<Behaviour> > *, List... (392 times, avg 21 ms)
 
 **** Functions that took longest to compile:
   8710 ms: yyparse(glslang::TParseContext*) (External/ShaderCompilers/glslang/glslang/MachineIndependent/glslang_tab.cpp)
