@@ -11,11 +11,21 @@ struct IUnknown; // workaround for old Win SDK header failures when using /permi
 #include "Utils.h"
 #include "external/flat_hash_map/bytell_hash_map.hpp"
 #include "external/inih/cpp/INIReader.h"
+#include "external/nlohmann/json.hpp"
 #include <algorithm>
 #include <assert.h>
 #include <string>
+#include <fstream>
 #include <string.h>
 #include <vector>
+
+inline std::string labels(const std::string_view key) {
+  if (key == "function_sets")
+    return "Function sets that took longest to compile / optimize";
+  if (key == "template_sets")
+    return "Template sets that took longest to instantiate";
+  return "";
+};
 
 struct Config
 {
@@ -31,6 +41,8 @@ struct Config
     int maxName = 70;
 
     bool onlyRootHeaders = true;
+
+    bool jsonOutput = false;
 };
 
 struct pair_hash
@@ -63,6 +75,8 @@ struct Analysis
     BuildNames& buildNames;
 
     FILE* out;
+
+    nlohmann::json full_json;
 
     const std::string_view GetBuildName(DetailIndex index)
     {
@@ -285,27 +299,48 @@ void Analysis::EmitCollapsedInfo(
     const ska::bytell_hash_map<std::string_view, InstantiateEntry> &collapsed,
     const char *header_string)
 {
-    std::vector<std::pair<std::string, InstantiateEntry>> sorted_collapsed;
-    sorted_collapsed.resize(std::min<size_t>(config.templateCount, collapsed.size()));
     auto cmp = [](const auto &lhs, const auto &rhs) {
         return std::tie(lhs.second.us, lhs.second.count, lhs.first) > std::tie(rhs.second.us, rhs.second.count, rhs.first);
     };
-    std::partial_sort_copy(
-        collapsed.begin(), collapsed.end(),
-        sorted_collapsed.begin(), sorted_collapsed.end(),
-        cmp);
 
-    fprintf(out, "%s%s**** %s%s:\n", col::kBold, col::kMagenta, header_string, col::kReset);
-    for (const auto &elt : sorted_collapsed)
+    if (config.jsonOutput)
     {
+      std::vector<std::pair<std::string, InstantiateEntry>> sorted_collapsed{collapsed.begin(), collapsed.end()};
+      std::sort(sorted_collapsed.begin(), sorted_collapsed.end(), cmp);
+      nlohmann::json array = nlohmann::json::array();
+      for (const auto &elt : sorted_collapsed)
+      {
+        int ms = int(elt.second.us / 1000);
+        int avg = int(ms / elt.second.count);
+        nlohmann::json element{
+          {"name", elt.first},
+          {"total_ms", ms},
+          {"count", elt.second.count},
+          {"avg_ms", avg}
+        };
+        array.push_back(element);
+      }
+      full_json.emplace(header_string, array);
+    } else {
+      std::vector<std::pair<std::string, InstantiateEntry>> sorted_collapsed;
+      sorted_collapsed.resize(std::min<size_t>(config.templateCount, collapsed.size()));
+      std::partial_sort_copy(
+          collapsed.begin(), collapsed.end(),
+          sorted_collapsed.begin(), sorted_collapsed.end(),
+          cmp);
+
+      fprintf(out, "%s%s**** %s%s:\n", col::kBold, col::kMagenta, labels(header_string).c_str(), col::kReset);
+      for (const auto &elt : sorted_collapsed)
+      {
         std::string dname = elt.first;
         if (dname.size() > config.maxName)
-            dname = dname.substr(0, config.maxName - 2) + "...";
+          dname = dname.substr(0, config.maxName - 2) + "...";
         int ms = int(elt.second.us / 1000);
         int avg = int(ms / elt.second.count);
         fprintf(out, "%s%6i%s ms: %s (%i times, avg %i ms)\n", col::kBold, ms, col::kReset, dname.c_str(), elt.second.count, avg);
+      }
+      fprintf(out, "\n");
     }
-    fprintf(out, "\n");
 }
 void Analysis::EmitCollapsedTemplates()
 {
@@ -337,7 +372,7 @@ void Analysis::EmitCollapsedTemplates()
             stats.count += inst.second.count;
         }
     }
-    EmitCollapsedInfo(collapsed, "Template sets that took longest to instantiate");
+    EmitCollapsedInfo(collapsed, "template_sets");
 }
 
 void Analysis::EmitCollapsedTemplateOpt()
@@ -355,18 +390,34 @@ void Analysis::EmitCollapsedTemplateOpt()
         ++stats.count;
         stats.us += fn.second;
     }
-    EmitCollapsedInfo(collapsed, "Function sets that took longest to compile / optimize");
+    EmitCollapsedInfo(collapsed, "function_sets");
 }
 
 void Analysis::EndAnalysis()
 {
     if (totalParseUs || totalCodegenUs)
     {
-        fprintf(out, "%s%s**** Time summary%s:\n", col::kBold, col::kMagenta, col::kReset);
-        fprintf(out, "Compilation (%i times):\n", totalParseCount);
-        fprintf(out, "  Parsing (frontend):        %s%7.1f%s s\n", col::kBold, totalParseUs / 1000000.0, col::kReset);
-        fprintf(out, "  Codegen & opts (backend):  %s%7.1f%s s\n", col::kBold, totalCodegenUs / 1000000.0, col::kReset);
-        fprintf(out, "\n");
+        if (config.jsonOutput)
+        {
+          nlohmann::json array = nlohmann::json::array();
+          nlohmann::json frontend{
+            {"name", "Parsing (frontend)"},
+            {"time_ms", totalParseUs / 1000.0}
+          };
+          nlohmann::json backend{
+            {"name", "Codegen & opts (backend)"},
+            {"time_ms", totalCodegenUs / 1000.0}
+          };
+          array.push_back(frontend);
+          array.push_back(backend);
+          full_json.emplace("summary", array);
+        } else {
+          fprintf(out, "%s%s**** Time summary%s:\n", col::kBold, col::kMagenta, col::kReset);
+          fprintf(out, "Compilation (%i times):\n", totalParseCount);
+          fprintf(out, "  Parsing (frontend):        %s%7.1f%s s\n", col::kBold, totalParseUs / 1000000.0, col::kReset);
+          fprintf(out, "  Codegen & opts (backend):  %s%7.1f%s s\n", col::kBold, totalCodegenUs / 1000000.0, col::kReset);
+          fprintf(out, "\n");
+        }
     }
 
     if (!parseFiles.empty())
@@ -382,13 +433,28 @@ void Analysis::EndAnalysis()
                 return a.us > b.us;
             return a.file < b.file;
             });
-        fprintf(out, "%s%s**** Files that took longest to parse (compiler frontend)%s:\n", col::kBold, col::kMagenta, col::kReset);
-        for (size_t i = 0, n = std::min<size_t>(config.fileParseCount, indices.size()); i != n; ++i)
+        if (config.jsonOutput)
         {
-            const auto& e = parseFiles[indices[i]];
-            fprintf(out, "%s%6i%s ms: %s\n", col::kBold, int(e.us/1000), col::kReset, GetBuildName(e.file).data());
+          nlohmann::json array = nlohmann::json::array();
+          for (size_t i = 0, n = indices.size(); i != n; ++i)
+          {
+              const auto& e = parseFiles[indices[i]];
+              nlohmann::json element{
+                {"name", GetBuildName(e.file).data()},
+                {"total_ms", int(e.us/1000)}
+              };
+              array.push_back(element);
+          }
+          full_json.emplace("file_parse", array);
+        } else {
+          fprintf(out, "%s%s**** Files that took longest to parse (compiler frontend)%s:\n", col::kBold, col::kMagenta, col::kReset);
+          for (size_t i = 0, n = std::min<size_t>(config.fileParseCount, indices.size()); i != n; ++i)
+          {
+              const auto& e = parseFiles[indices[i]];
+              fprintf(out, "%s%6i%s ms: %s\n", col::kBold, int(e.us/1000), col::kReset, GetBuildName(e.file).data());
+          }
+          fprintf(out, "\n");
         }
-        fprintf(out, "\n");
     }
     if (!codegenFiles.empty())
     {
@@ -403,13 +469,28 @@ void Analysis::EndAnalysis()
                 return a.us > b.us;
             return a.file < b.file;
             });
-        fprintf(out, "%s%s**** Files that took longest to codegen (compiler backend)%s:\n", col::kBold, col::kMagenta, col::kReset);
-        for (size_t i = 0, n = std::min<size_t>(config.fileCodegenCount, indices.size()); i != n; ++i)
+        if (config.jsonOutput)
         {
-            const auto& e = codegenFiles[indices[i]];
-            fprintf(out, "%s%6i%s ms: %s\n", col::kBold, int(e.us/1000), col::kReset, GetBuildName(e.file).data());
+          nlohmann::json array = nlohmann::json::array();
+          for (size_t i = 0, n = indices.size(); i != n; ++i)
+          {
+              const auto& e = codegenFiles[indices[i]];
+              nlohmann::json element {
+                {"name", GetBuildName(e.file).data()},
+                {"total_ms", int(e.us/1000)}
+              };
+              array.push_back(element);
+          }
+          full_json.emplace("file_codegen", array);
+        } else {
+          fprintf(out, "%s%s**** Files that took longest to codegen (compiler backend)%s:\n", col::kBold, col::kMagenta, col::kReset);
+          for (size_t i = 0, n = indices.size(); i != n; ++i)
+          {
+              const auto& e = codegenFiles[indices[i]];
+              fprintf(out, "%s%6i%s ms: %s\n", col::kBold, int(e.us/1000), col::kReset, GetBuildName(e.file).data());
+          }
+          fprintf(out, "\n");
         }
-        fprintf(out, "\n");
     }
 
     if (!instantiations.empty())
@@ -423,25 +504,47 @@ void Analysis::EndAnalysis()
             instArray[d.idx].second.us += inst.second.us;
             instArray[d.idx].second.count += inst.second.count;
         }
-        size_t n = std::min<size_t>(config.templateCount, instArray.size());
         auto cmp = [&](const auto&a, const auto &b) {
             return
                 std::tie(a.second.us, a.second.count, a.first) >
                 std::tie(b.second.us, b.second.count, b.first);
         };
-        std::partial_sort(instArray.begin(), instArray.begin()+n, instArray.end(), cmp);
-        fprintf(out, "%s%s**** Templates that took longest to instantiate%s:\n", col::kBold, col::kMagenta, col::kReset);
-        for (size_t i = 0; i != n; ++i)
+        if (config.jsonOutput)
         {
-            const auto& e = instArray[i];
-            std::string dname = std::string(GetBuildName(e.first));
-            if (dname.size() > config.maxName)
-                dname = dname.substr(0, config.maxName-2) + "...";
-            int ms = int(e.second.us / 1000);
-            int avg = int(ms / std::max(e.second.count,1));
-            fprintf(out, "%s%6i%s ms: %s (%i times, avg %i ms)\n", col::kBold, ms, col::kReset, dname.c_str(), e.second.count, avg);
+          std::sort(instArray.begin(), instArray.end(), cmp);
+          nlohmann::json array = nlohmann::json::array();
+          for (size_t i = 0; i != instArray.size(); ++i)
+          {
+              const auto& e = instArray[i];
+              std::string dname = std::string(GetBuildName(e.first));
+              int ms = int(e.second.us / 1000);
+              int avg = int(ms / std::max(e.second.count,1));
+              if (e.second.count == 0) break;
+              nlohmann::json element{
+                {"name", dname},
+                {"total_ms", ms},
+                {"count", e.second.count},
+                {"avg_ms", avg}
+              };
+              array.push_back(element);
+          }
+          full_json.emplace("template_instantiate", array);
+        } else {
+          size_t n = std::min<size_t>(config.templateCount, instArray.size());
+          std::partial_sort(instArray.begin(), instArray.begin()+n, instArray.end(), cmp);
+          fprintf(out, "%s%s**** Templates that took longest to instantiate%s:\n", col::kBold, col::kMagenta, col::kReset);
+          for (size_t i = 0; i != n; ++i)
+          {
+              const auto& e = instArray[i];
+              std::string dname = std::string(GetBuildName(e.first));
+              if (dname.size() > config.maxName)
+                  dname = dname.substr(0, config.maxName-2) + "...";
+              int ms = int(e.second.us / 1000);
+              int avg = int(ms / std::max(e.second.count,1));
+              fprintf(out, "%s%6i%s ms: %s (%i times, avg %i ms)\n", col::kBold, ms, col::kReset, dname.c_str(), e.second.count, avg);
+          }
+          fprintf(out, "\n");
         }
-        fprintf(out, "\n");
 
         EmitCollapsedTemplates();
     }
@@ -465,17 +568,35 @@ void Analysis::EndAnalysis()
                 return a.second > b.second;
             return a.first < b.first;
             });
-        fprintf(out, "%s%s**** Functions that took longest to compile%s:\n", col::kBold, col::kMagenta, col::kReset);
-        for (size_t i = 0, n = std::min<size_t>(config.functionCount, indices.size()); i != n; ++i)
+        if (config.jsonOutput)
         {
-            const auto& e = functionsArray[indices[i]];
-            std::string dname = std::string(GetBuildName(e.first.first));
-            if (dname.size() > config.maxName)
-                dname = dname.substr(0, config.maxName-2) + "...";
-            int ms = int(e.second / 1000);
-            fprintf(out, "%s%6i%s ms: %s (%s)\n", col::kBold, ms, col::kReset, dname.c_str(), GetBuildName(e.first.second).data());
+          nlohmann::json array = nlohmann::json::array();
+          for (size_t i = 0, n = indices.size(); i != n; ++i)
+          {
+              const auto& e = functionsArray[indices[i]];
+              std::string dname = std::string(GetBuildName(e.first.first));
+              int ms = int(e.second / 1000);
+              nlohmann::json element{
+                {"name", dname},
+                {"total_ms", ms},
+                {"fname", GetBuildName(e.first.second).data()}
+              };
+              array.push_back(element);
+          }
+          full_json.emplace("function_compile", array);
+        } else {
+          fprintf(out, "%s%s**** Functions that took longest to compile%s:\n", col::kBold, col::kMagenta, col::kReset);
+          for (size_t i = 0, n = std::min<size_t>(config.functionCount, indices.size()); i != n; ++i)
+          {
+              const auto& e = functionsArray[indices[i]];
+              std::string dname = std::string(GetBuildName(e.first.first));
+              if (dname.size() > config.maxName)
+                  dname = dname.substr(0, config.maxName-2) + "...";
+              int ms = int(e.second / 1000);
+              fprintf(out, "%s%6i%s ms: %s (%s)\n", col::kBold, ms, col::kReset, dname.c_str(), GetBuildName(e.first.second).data());
+          }
+          fprintf(out, "\n");
         }
-        fprintf(out, "\n");
         EmitCollapsedTemplateOpt();
     }
 
@@ -483,41 +604,93 @@ void Analysis::EndAnalysis()
 
     if (!expensiveHeaders.empty())
     {
-        fprintf(out, "%s%s*** Expensive headers%s:\n", col::kBold, col::kMagenta, col::kReset);
-        for (const auto& e : expensiveHeaders)
+        if (config.jsonOutput)
         {
-            const auto& es = headerMap[e.first];
-            int ms = int(e.second / 1000);
-            int avg = ms / es.count;
-            fprintf(out, "%s%i%s ms: %s%s%s (included %i times, avg %i ms), included via:\n", col::kBold, ms, col::kReset, col::kBold, e.first.data(), col::kReset, es.count, avg);
-            int pathCount = 0;
-
-            auto sortedIncludeChains = es.includePaths;
-            std::sort(sortedIncludeChains.begin(), sortedIncludeChains.end(), [](const auto& a, const auto& b)
+            nlohmann::json header_array = nlohmann::json::array();
+            for (const auto& e : expensiveHeaders)
             {
-                if (a.us != b.us)
-                    return a.us > b.us;
-                return a.files < b.files;
-            });
+                const auto& es = headerMap[e.first];
+                int ms = int(e.second / 1000);
+                int avg = ms / es.count;
+                nlohmann::json element{
+                  {"name", e.first.data()},
+                  {"count", es.count},
+                  {"time_ms", ms},
+                  {"avg_ms", avg}
+                };
 
-            for (const auto& chain : sortedIncludeChains)
-            {
-                fprintf(out, "  ");
-                for (auto it = chain.files.rbegin(), itEnd = chain.files.rend(); it != itEnd; ++it)
+                auto sortedIncludeChains = es.includePaths;
+                std::sort(sortedIncludeChains.begin(), sortedIncludeChains.end(), [](const auto& a, const auto& b)
                 {
-                    fprintf(out, "%s ", utils::GetFilename(GetBuildName(*it)).data());
+                    if (a.us != b.us)
+                        return a.us > b.us;
+                    return a.files < b.files;
+                });
+
+                nlohmann::json inclusions_array = nlohmann::json::array();
+                for (const auto& chain : sortedIncludeChains)
+                {
+                    nlohmann::json inc_chain = nlohmann::json::array();
+                    for (auto it = chain.files.rbegin(), itEnd = chain.files.rend(); it != itEnd; ++it)
+                    {
+                        nlohmann::json chain_element{
+                          {"fname", utils::GetFilename(GetBuildName(*it)).data()}
+                        };
+                        inc_chain.push_back(chain_element);
+                    }
+                    nlohmann::json inclusion{
+                      {"chain", inc_chain},
+                      {"time_ms", int(chain.us/1000)}
+                    };
+                    inclusions_array.push_back(inclusion);
                 }
-                fprintf(out, " (%i ms)\n", int(chain.us/1000));
-                ++pathCount;
-                if (pathCount > config.headerChainCount)
-                    break;
+                element.emplace("inclusion_chains", inclusions_array);
+                header_array.push_back(element);
             }
-            if (pathCount > config.headerChainCount)
+            full_json.emplace("header_inclusion", header_array);
+        } else {
+            fprintf(out, "%s%s*** Expensive headers%s:\n", col::kBold, col::kMagenta, col::kReset);
+            for (const auto& e : expensiveHeaders)
             {
-                fprintf(out, "  ...\n");
+                const auto& es = headerMap[e.first];
+                int ms = int(e.second / 1000);
+                int avg = ms / es.count;
+                fprintf(out, "%s%i%s ms: %s%s%s (included %i times, avg %i ms), included via:\n", col::kBold, ms, col::kReset, col::kBold, e.first.data(), col::kReset, es.count, avg);
+                int pathCount = 0;
+
+                auto sortedIncludeChains = es.includePaths;
+                std::sort(sortedIncludeChains.begin(), sortedIncludeChains.end(), [](const auto& a, const auto& b)
+                {
+                    if (a.us != b.us)
+                        return a.us > b.us;
+                    return a.files < b.files;
+                });
+
+                for (const auto& chain : sortedIncludeChains)
+                {
+                    fprintf(out, "  ");
+                    for (auto it = chain.files.rbegin(), itEnd = chain.files.rend(); it != itEnd; ++it)
+                    {
+                        fprintf(out, "%s ", utils::GetFilename(GetBuildName(*it)).data());
+                    }
+                    fprintf(out, " (%i ms)\n", int(chain.us/1000));
+                    ++pathCount;
+                    if (pathCount > config.headerChainCount)
+                        break;
+                }
+                if (pathCount > config.headerChainCount)
+                {
+                    fprintf(out, "  ...\n");
+                }
+                fprintf(out, "\n");
             }
-            fprintf(out, "\n");
         }
+    }
+    if (config.jsonOutput)
+    {
+        std::ofstream jsonfile("dump.json");
+        jsonfile << full_json;
+        jsonfile.close();
     }
 }
 
@@ -536,8 +709,9 @@ void Analysis::FindExpensiveHeaders()
             return a.second > b.second;
         return a.first < b.first;
     });
-    if (expensiveHeaders.size() > config.headerCount)
-        expensiveHeaders.resize(config.headerCount);
+    if (!config.jsonOutput)
+        if (expensiveHeaders.size() > config.headerCount)
+            expensiveHeaders.resize(config.headerCount);
 }
 
 void Analysis::ReadConfig()
@@ -555,6 +729,7 @@ void Analysis::ReadConfig()
 
     config.maxName          = (int)ini.GetInteger("misc", "maxNameLength",  config.maxName);
     config.onlyRootHeaders  =      ini.GetBoolean("misc", "onlyRootHeaders",config.onlyRootHeaders);
+    config.jsonOutput       =      ini.GetBoolean("misc", "jsonOutput",     config.jsonOutput);
 }
 
 
