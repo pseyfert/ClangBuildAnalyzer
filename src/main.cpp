@@ -61,6 +61,7 @@ static void PrintUsage()
     printf("%sUSAGE%s: one of\n", col::kBold, col::kReset);
     printf("  ClangBuildAnalyzer %s--start <artifactsdir>%s\n", col::kBold, col::kReset);
     printf("  ClangBuildAnalyzer %s--stop <artifactsdir> <filename>%s\n", col::kBold, col::kReset);
+    printf("  ClangBuildAnalyzer %s--gather-all <artifactsdir> <filename>%s\n", col::kBold, col::kReset);
     printf("  ClangBuildAnalyzer %s--analyze <filename>%s\n", col::kBold, col::kReset);
 }
 
@@ -153,7 +154,7 @@ static int RunStop(int argc, const char* argv[])
 {
     if (argc < 4)
     {
-        printf("%sERROR: --stop requires <artifactsdir> <filename> to be passed.%s\n", col::kRed, col::kReset);
+        printf("%sERROR: --stop/--gather-all requires <artifactsdir> <filename> to be passed.%s\n", col::kRed, col::kReset);
         return 1;
     }
 
@@ -162,18 +163,19 @@ static int RunStop(int argc, const char* argv[])
     std::string outFile = argv[3];
     printf("%sStopping build tracing and saving to '%s'...%s\n", col::kYellow, outFile.c_str(), col::kReset);
 
+    std::string artifactsDir = argv[2];
     time_t startTime = 0;
     time_t stopTime = time(NULL);
-
-    std::string artifactsDir = argv[2];
+    if (strcmp(argv[1], "--stop") == 0)
+    {
     std::string fname = artifactsDir+"/ClangBuildAnalyzerSession.txt";
     FILE* fsession = fopen(fname.c_str(), "rt");
     if (!fsession)
     {
-        printf("%sWARN: failed to open session file at '%s'.%s\n", col::kYellow, fname.c_str(), col::kReset);
+            printf("%sERROR: failed to open session file at '%s'.%s\n", col::kRed, fname.c_str(), col::kReset);
+            return 1;
     }
-    else
-    {
+
 #if _MSC_VER
         fscanf(fsession, "%llu", &startTime);
 #else
@@ -357,6 +359,8 @@ static int ProcessCommands(int argc, const char* argv[])
     if (strcmp(argv[1], "--start") == 0)
         return RunStart(argc, argv);
     if (strcmp(argv[1], "--stop") == 0)
+        return RunStop(argc, argv);
+    if (strcmp(argv[1], "--gather-all") == 0)
         return RunStop(argc, argv);
     if (strcmp(argv[1], "--analyze") == 0)
         return RunAnalyze(argc, argv, stdout);

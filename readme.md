@@ -23,7 +23,7 @@ reports from multiple compilations, and output "what took the most time" summary
 1. **Stop the build capture**: `ClangBuildAnalyzer --stop <artifacts_folder> <capture_file>`<br/>
    This will load all Clang time trace compatible `*.json` files under the given `artifacts_folder` that were modified after
    `--start` step was done (Clang `-ftime-trace` produces one JSON file next to each object file), process them and store data file into
-   a binary `capture_file`. If the start step above has been skipped, then all the modification time is ignored.
+   a binary `capture_file`. Alternatively, the check of the modification time can be skipped by using `--gather-all` instead of `--stop`.
 1. **Run the build analysis**: `ClangBuildAnalyzer --analyze <capture_file>`<br/>
    This will read the `capture_file` produced by `--stop` step, calculate the slowest things and print them. If a
    `ClangBuildAnalyzer.ini` file exists in the current folder, it will be read to control how many of various things to print.
